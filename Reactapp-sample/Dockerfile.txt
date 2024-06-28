@@ -1,0 +1,75 @@
+FROM node:10.22.0-alpine3.9 as node-build
+RUN apk add python3 make g++
+WORKDIR /opt/app/src
+COPY package*.json ./
+RUN npm install
+COPY . ./
+RUN npm run prod
+FROM php:7.2-fpm-alpine as composer-build
+RUN apk add libpng-dev libxml2-dev php-soap icu-dev autoconf g++ make
+
+RUN docker-php-ext-install -j$(nproc) gd \
+      zip \
+      xml \
+      mbstring \
+      pdo_mysql \
+      intl \
+      pcntl
+RUN pecl install mongodb && docker-php-ext-enable mongodb
+WORKDIR /var/www/app/
+RUN mkdir ./vendor
+COPY composer.* ./
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/bin --filename=composer
+RUN composer global require hirak/prestissimo
+ARG APP_ENV=prod
+COPY . ./
+
+RUN composer --global config process-timeout 2000
+RUN composer install --no-interaction --no-dev
+FROM php:7.4-apache
+WORKDIR /var/www/app
+
+RUN apt-get update && apt-get install -y \
+        libssl-dev \
+        libzip-dev \
+        libfreetype6-dev \
+        libjpeg62-turbo-dev \
+        libpng-dev \
+        libxml2-dev \ 
+        nodejs \
+        supervisor \
+        nfs4-acl-tools acl \
+        cron \
+        vim-tiny \ 
+        libonig-dev \
+         && apt-get purge -y --auto-remove \
+      rm -rf /var/lib/apt/lists/* && \ 
+
+    docker-php-ext-install -j$(nproc) gd \
+      zip \
+      xml \
+      mbstring \
+      pdo_mysql \
+      intl \
+      pcntl \
+      mysqli \
+      pdo iconv soap opcache
+
+ENV APACHE_DOCUMENT_ROOT=/var/www/app/public
+RUN sed -ri -e 's!/var/www/html!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/*.conf
+RUN sed -ri -e 's!/var/www/!${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/apache2.conf /etc/apache2/conf-available/*.conf
+RUN a2enmod rewrite headers
+RUN docker-php-ext-install opcache
+
+ENV APP_ENV=production
+RUN php artisan key:generate
+
+COPY ./php.ini /usr/local/etc/php/php.ini
+
+COPY ./docker-entrypoint.sh /var/www/tmp/
+
+RUN chmod +x ./docker-entrypoint.sh
+ENTRYPOINT ["./docker-entrypoint.sh"]
+
+# The default apache run command
+CMD ["apache2-foreground"]
